@@ -1,0 +1,61 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "robust-ddfunnel"
+version = "0.1.0"
+description = "Robust Data-Driven Control with Quadratic Funnels (paper-faithful implementation)."
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+authors = [{ name = "Shiva Shakeri" }]
+dependencies = [
+  "numpy>=1.24",
+  "scipy>=1.10",
+  "cvxpy>=1.4,<2",
+  "scs>=3.2",         # default SDP solver
+  "osqp>=0.6",        # QP/alt solver used by CVXPy
+  "ecos>=2.0",        # another CVXPy-compatible solver
+  "matplotlib>=3.7",  # plots
+  "pyyaml>=6.0",      # config
+  "pandas>=2.0",      # run logs/tables
+  "tqdm>=4.66",
+  "typing-extensions>=4.7"
+]
+
+[project.optional-dependencies]
+dev = [
+  "pytest>=7.4",
+  "pytest-cov>=4.1",
+  "black>=24.3",
+  "ruff>=0.4",
+  "mypy>=1.8"
+]
+# Note: Commercial solvers (e.g., MOSEK) are optional and installed separately if you want them.
+
+[tool.setuptools]
+package-dir = {"" = "src"}
+
+[tool.setuptools.packages.find]
+where = ["src"]
+include = ["*"]
+
+[tool.black]
+line-length = 100
+target-version = ["py311"]
+
+[tool.ruff]
+line-length = 100
+src = ["src", "tests"]
+select = ["E", "F", "I", "UP", "B"]
+ignore = ["E501"]  # allow long math lines
+
+[tool.pytest.ini_options]
+addopts = "-q"
+
+[tool.mypy]
+python_version = "3.11"
+strict = false
+warn_unused_ignores = true
+exclude = ["notebooks/"]

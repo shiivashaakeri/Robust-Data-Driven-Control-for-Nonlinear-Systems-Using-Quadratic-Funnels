@@ -1,0 +1,65 @@
+# 2-DoF planar robot arm demo (plant vs. imperfect twin)
+
+plant:
+  m1: 1.0
+  m2: 0.8
+  l1: 0.7
+  l2: 0.6
+  I1: 0.05
+  I2: 0.04
+  b1: 0.02
+  b2: 0.02
+  g: 9.81
+  # lc1, lc2 optional (default: 0.5*l1, 0.5*l2)
+
+twin:   # slight mismatch to realize Δ(x,u)
+  m1: 0.95
+  m2: 0.84
+  l1: 0.73
+  l2: 0.58
+  I1: 0.055
+  I2: 0.038
+  b1: 0.018
+  b2: 0.022
+  g: 9.81
+
+initial:
+  plant_x0: [0.30, -0.25, 0.00, 0.00]
+  twin_x0:  [0.28, -0.22, 0.00, 0.00]
+discretization:
+  dt: 0.01
+  method: rk4
+
+horizon:
+  N: 1500
+
+constraints:
+  X:        # state box: order = [q1, q2, dq1, dq2]
+    q1:  [-1.2, 1.2]
+    q2:  [-1.2, 1.2]
+    dq1: [-3.0, 3.0]
+    dq2: [-3.0, 3.0]
+  U:        # input box: order = [tau1, tau2]
+    tau1: [-25.0, 25.0]
+    tau2: [-25.0, 25.0]
+
+funnel:     # paper constants
+  alpha: 0.92
+  L_J: 3.0
+  L_r: 1.0
+  gamma: 0.15
+
+segmentation:
+  T: 200
+  L_min: 6      # n+m=6 for 2-DoF arm (n=4, m=2)
+  L_max: 60
+  v_bar: 0.6
+  delta_min: 0.05
+
+solver:
+  name: scs
+  options:
+    max_iters: 20000
+    eps: 1e-5
+
+seed: 42

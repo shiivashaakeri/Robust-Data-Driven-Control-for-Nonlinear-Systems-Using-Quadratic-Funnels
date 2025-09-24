@@ -1,0 +1,19 @@
+# configs/nominal_lqr.yaml
+# LQR-based nominal planner for the 2-DoF arm (digital twin)
+
+x_goal: [4.0, -1.0, 0.0, 0.0]   # [q1, q2, dq1, dq2]
+u_goal: auto
+
+# Quadratic costs (either full 4x4/2x2 matrices or diag lists)
+Q:  [20.0, 20.0, 2.0, 2.0]
+R:  [0.1, 0.1]
+Qf: [80.0, 80.0, 8.0, 8.0]
+
+# Horizon for the nominal plan (steps)
+N: 1000
+
+
+# Numerical knobs (rarely need adjustment)
+riccati_tol: 1e-9
+riccati_maxit: 10000
+fd_eps: 1.0e-6
