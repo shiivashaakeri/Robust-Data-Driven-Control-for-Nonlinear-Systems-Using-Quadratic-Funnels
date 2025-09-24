@@ -5,9 +5,9 @@ x_goal: [4.0, -1.0, 0.0, 0.0]   # [q1, q2, dq1, dq2]
 u_goal: auto
 
 # Quadratic costs (either full 4x4/2x2 matrices or diag lists)
-Q:  [20.0, 20.0, 2.0, 2.0]
-R:  [0.1, 0.1]
-Qf: [80.0, 80.0, 8.0, 8.0]
+Q:  [50.0, 50.0, 8.0, 8.0]
+R:  [0.3, 0.3]
+Qf: [200.0, 200.0, 24.0, 24.0]
 
 # Horizon for the nominal plan (steps)
 N: 1000

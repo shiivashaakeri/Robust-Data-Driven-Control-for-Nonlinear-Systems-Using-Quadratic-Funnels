@@ -35,13 +35,13 @@ horizon:
 
 constraints:
   X:        # state box: order = [q1, q2, dq1, dq2]
-    q1:  [-1.2, 1.2]
-    q2:  [-1.2, 1.2]
+    q1:  [-5.0, 5.0]
+    q2:  [-5.0, 5.0]
     dq1: [-3.0, 3.0]
-    dq2: [-3.0, 3.0]
+    dq2: [-4.0, 4.0]
   U:        # input box: order = [tau1, tau2]
-    tau1: [-25.0, 25.0]
-    tau2: [-25.0, 25.0]
+    tau1: [-25.0, 30.0]
+    tau2: [-25.0, 30.0]
 
 funnel:     # paper constants
   alpha: 0.92

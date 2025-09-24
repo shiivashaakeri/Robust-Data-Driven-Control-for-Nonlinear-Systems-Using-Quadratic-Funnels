@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Callable, Literal, Optional, Tuple, Union
+from typing import Callable, Literal, Optional, Sequence, Tuple, Union
 
 import numpy as np
 
@@ -232,7 +232,8 @@ def estimate_LJ_discrete(
 
     return best * (1.0 + float(rel_margin)) + float(abs_margin)
 
-def estimate_Lr_discrete(  # noqa: PLR0915
+
+def estimate_Lr_discrete(  # noqa: PLR0915, C901, PLR0912
     step: StepFn,
     X_nom: Array,
     U_nom: Array,
@@ -253,49 +254,18 @@ def estimate_Lr_discrete(  # noqa: PLR0915
     rng: Optional[np.random.Generator] = None,
     rel_margin: float = 0.0,
     abs_margin: float = 0.0,
+    # Local estimation (recommended)
+    local_only: bool = False,
+    eps_x: float = 1e-3,
+    eps_u: float = 1e-2,
+    # NEW: control clipping & denominator
+    clip_to_box: bool = False,
 ) -> float:
     """
-    Estimate L_r for the *discrete* plant map F(x,u)=step(x,u) along a given nominal
-    trajectory (X_nom, U_nom), with bounds enforced on XxU.
-
-    We find a scalar L_r so that, for perturbations δ=[η;ξ] near each nominal (x*,u*),
-        || F(x*+η, u*+ξ) - ( F(x*,u*) + A*η + B*ξ ) || <= L_r ||δ||^2,
-    where [A*,B*] = Jacobian of F at (x*,u*).
-
-    Two estimators (take the maximum):
-      (1) Hessian bound:    L_r ≈ 0.5 * sup || D^2 F ||   via symmetric FD on J.
-      (2) Remainder ratio:  sup_δ  || r || / ||δ||^2      with random small δ.
-
-    Parameters
-    ----------
-    step : callable, x⁺ = step(x,u).
-    X_nom, U_nom : arrays
-        Nominal trajectory (T+1,n), (T,m).
-    X_box, U_box : (low, high)
-        State and input bounds (length-n / length-m vectors).
-    use_hessian_bound, use_remainder_ratio : bool
-        Enable/disable each estimator.
-    h_rel : float
-        Relative step size for Hessian FD (scale per-coordinate by box width).
-    dirs_per_point_hess : int
-        Random directions per nominal point for Hessian estimator.
-    delta_rel : float
-        Relative perturbation radius for remainder estimator (fraction of box width).
-    dirs_per_point_rem : int
-        Random directions per nominal point for remainder estimator.
-    fd_eps : float
-        Epsilon for inner Jacobian finite differences.
-    norm : {"2","fro"}
-        Matrix norm for Jacobian differences and vector 2-norm for residuals.
-    rng : np.random.Generator
-        RNG; default uses np.random.default_rng(0).
-    rel_margin, abs_margin : float
-        Safety margins applied at the end: L_r ← L_r*(1+rel) + abs.
-
-    Returns
-    -------
-    Lr_hat : float
-        Conservative estimate of L_r for use in the paper's bound.
+    Estimate L_r along (X_nom,U_nom). If local_only=True, use fixed small radii
+    eps_x/eps_u around each nominal point and (by default) DO NOT clip.
+    The remainder-ratio denominator uses the *actual* applied perturbation:
+        delta_applied = [x_plus-x0; u_plus-u0].
     """
     if rng is None:
         rng = np.random.default_rng(0)
@@ -312,7 +282,6 @@ def estimate_Lr_discrete(  # noqa: PLR0915
     U_low, U_high = (np.asarray(U_box[0], float), np.asarray(U_box[1], float))
     z_low = np.concatenate([X_low, U_low])
     z_high = np.concatenate([X_high, U_high])
-    box_width = z_high - z_low
 
     def _J_at(x: Array, u: Array) -> Array:
         A, B = discrete_jacobians_fd(step, x, u, eps=fd_eps)  # (n,n),(n,m)
@@ -323,64 +292,156 @@ def estimate_Lr_discrete(  # noqa: PLR0915
     # -------------------------------
     Lr_hess = 0.0
     if use_hessian_bound:
-        # per-coordinate step magnitudes (avoid zero)
-        h_vec = np.maximum(h_rel * box_width, 1e-12)
+        if local_only:
+            h_vec = np.concatenate([np.full(n, float(eps_x)), np.full(m, float(eps_u))])
+        else:
+            box_width = np.concatenate([X_high - X_low, U_high - U_low])
+            h_vec = np.maximum(h_rel * box_width, 1e-12)
+
         for k in range(T):
             z0 = np.concatenate([X_nom[k], U_nom[k]])
-            # random unit directions in R^{n+m}
             D = rng.normal(size=(dirs_per_point_hess, d))
             D /= np.linalg.norm(D, axis=1, keepdims=True) + 1e-15
             for dir_vec in D:
-                step_vec = h_vec * dir_vec
-                h_eff = float(np.linalg.norm(step_vec))
-                if h_eff < 1e-15:
+                step_vec = h_vec * dir_vec  # desired displacement from z0
+                z_plus = z0 + step_vec
+                z_minus = z0 - step_vec
+                if clip_to_box:
+                    z_plus = np.clip(z_plus, z_low, z_high)
+                    z_minus = np.clip(z_minus, z_low, z_high)
+                # effective step actually applied
+                step_eff = 0.5 * (np.linalg.norm(z_plus - z0) + np.linalg.norm(z0 - z_minus))
+                if step_eff < 1e-15:
                     continue
-                z_plus = np.clip(z0 + step_vec, z_low, z_high)
-                z_minus = np.clip(z0 - step_vec, z_low, z_high)
+
                 x_p, u_p = z_plus[:n], z_plus[n:]
                 x_m, u_m = z_minus[:n], z_minus[n:]
 
                 Jp = _J_at(x_p, u_p)
                 Jm = _J_at(x_m, u_m)
-                Jdiff = (Jp - Jm) / (2.0 * h_eff)
+                Jdiff = (Jp - Jm) / (2.0 * step_eff)
 
                 val = float(np.linalg.norm(Jdiff, 2 if norm == "2" else "fro"))
-                # Taylor: r ≈ 0.5 * D^2F[z](δ,δ) ⇒ ||r|| ≤ 0.5 ||D^2F|| ||δ||^2
-                Lr_hess = max(Lr_hess, 0.5 * val)
+                Lr_hess = max(Lr_hess, 0.5 * val)  # 0.5 * ||D^2F||
 
     # -------------------------------------
     # (2) Empirical remainder-ratio bound
     # -------------------------------------
     Lr_rem = 0.0
     if use_remainder_ratio:
-        # perturbation magnitude per coordinate
-        d_vec = np.maximum(delta_rel * box_width, 1e-12)
+        if local_only:
+            d_vec = np.concatenate([np.full(n, float(eps_x)), np.full(m, float(eps_u))])
+        else:
+            box_width = np.concatenate([X_high - X_low, U_high - U_low])
+            d_vec = np.maximum(delta_rel * box_width, 1e-12)
+
         for k in range(T):
             x0 = X_nom[k]
             u0 = U_nom[k]
+            z0 = np.concatenate([x0, u0])
             x1_nom = step(x0, u0)  # F(x*,u*)
-            J0 = _J_at(x0, u0)     # [A|B] at (x*,u*)
+            J0 = _J_at(x0, u0)  # [A|B] at (x*,u*)
 
-            # random directions in R^{n+m}
             D = rng.normal(size=(dirs_per_point_rem, d))
             D /= np.linalg.norm(D, axis=1, keepdims=True) + 1e-15
             for dir_vec in D:
-                delta = d_vec * dir_vec  # [η; ξ]
-                eta = delta[:n]
-                xi = delta[n:]
+                target = d_vec * dir_vec
+                z_plus = z0 + target
+                if clip_to_box:
+                    z_plus = np.clip(z_plus, z_low, z_high)
+                # actual applied perturbation:
+                delta_applied = z_plus - z0
+                if np.linalg.norm(delta_applied) < 1e-15:
+                    continue
 
-                x_plus = np.clip(x0 + eta, X_low, X_high)
-                u_plus = np.clip(u0 + xi, U_low, U_high)
-
-                x1_plus = step(x_plus, u_plus)
-                # linear prediction about (x0,u0): x1_lin = x1_nom + A*eta + B*xi = x1_nom + J0 @ [eta;xi]
-                x1_lin = x1_nom + J0 @ delta
+                eta = delta_applied[:n]
+                xi = delta_applied[n:]
+                x1_plus = step(x0 + eta, u0 + xi)
+                x1_lin = x1_nom + J0 @ delta_applied  # affine linearization
                 r = x1_plus - x1_lin
 
-                denom = float(np.linalg.norm(delta) ** 2 + 1e-18)
-                val = float(np.linalg.norm(r) / denom)
+                denom = float(np.linalg.norm(delta_applied) ** 2)
+                val = float(np.linalg.norm(r) / (denom + 1e-18))
                 Lr_rem = max(Lr_rem, val)
 
     Lr = max(Lr_hess, Lr_rem)
     Lr = Lr * (1.0 + float(rel_margin)) + float(abs_margin)
     return float(Lr)
+
+
+def beta_from_segment(
+    etas,
+    xis,
+    k_i: int,
+    C: float,
+    gamma: float,
+    L_r: float,
+    *,
+    ks: Optional[Sequence[int]] = None,
+    k_start: Optional[int] = None,
+) -> float:
+    """
+    Aggregate β over a data window (eq. β_def in the paper):
+
+        β_i = Σ_k ( C*|k - k_i| * ||[η(k); ξ(k)]||_2 + gamma + L_r * ||[η(k); ξ(k)]||_2^2 )^2
+
+    Parameters
+    ----------
+    etas : sequence of (n,) arrays
+        Deviation states η(k) collected over the data window (in order).
+    xis : sequence of (m,) arrays
+        Input deviations ξ(k) collected over the data window (in order).
+    k_i : int
+        Start index of segment i.
+    C : float
+        The linear-in-time bound coefficient (C = L_J * v).
+    gamma : float
+        Uniform mismatch bound.
+    L_r : float
+        Quadratic remainder coefficient for linearization error.
+    ks : sequence of int, optional
+        Absolute time indices for each sample in `etas`/`xis` (same length). If provided,
+        |k - k_i| is computed exactly as abs(ks[t] - k_i).
+    k_start : int, optional
+        Absolute index of the first sample in this window (k_i^D). If provided (and `ks` is not),
+        distances are abs((k_start + t) - k_i), t=0..L-1.
+
+    Returns
+    -------
+    float
+        β_i value.
+
+    Notes
+    -----
+    - If neither `ks` nor `k_start` is provided, we fallback to using the local window
+      index t=0..L-1 as |k - k_i|; this is OK only if your window starts at k_i
+      (i.e., k_start == k_i). Prefer passing `k_start` (k_i^D) or `ks`.
+    """
+    L = min(len(etas), len(xis))
+    if L == 0:
+        return 0.0
+
+    # Build ||[η; ξ]||_2 per sample
+    z_norms = np.empty(L, dtype=float)
+    for t in range(L):
+        e = np.asarray(etas[t], dtype=float).ravel()
+        u = np.asarray(xis[t], dtype=float).ravel()
+        z_norms[t] = float(np.linalg.norm(np.concatenate([e, u]), ord=2))
+
+    # Distances |k - k_i| in "steps"
+    if ks is not None:
+        ks_arr = np.asarray(ks, dtype=int)
+        if ks_arr.size != L:
+            raise ValueError("len(ks) must match number of samples in etas/xis")
+        dists = np.abs(ks_arr - int(k_i)).astype(float)
+    elif k_start is not None:
+        # samples correspond to k = k_start + t
+        dists = np.abs((int(k_start) + np.arange(L)) - int(k_i)).astype(float)
+    else:
+        # Fallback: treat local index as distance (only correct if k_start == k_i)
+        dists = np.arange(L, dtype=float)
+
+    # term_k = C*|k-k_i|*||z|| + gamma + L_r*||z||^2
+    terms = C * dists * z_norms + gamma + L_r * (z_norms**2)
+    beta = float(np.sum(terms**2))
+    return beta

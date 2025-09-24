@@ -46,17 +46,20 @@ from models.parameters import (  # pyright: ignore[reportMissingImports]
 STATE_ORDER = ["q1", "q2", "dq1", "dq2"]
 INPUT_ORDER = ["tau1", "tau2"]
 
+
 def _as_state(vec: Any, expected_dim: int = 4) -> np.ndarray:
     arr = np.asarray(vec, dtype=float).reshape(-1)
     if arr.size != expected_dim:
         raise ValueError(f"initial state must have length {expected_dim}, got {arr.size}")
     return arr
 
+
 def _as_vec(x, dim):
     arr = np.asarray(x, dtype=float).reshape(-1)
     if arr.size != dim:
         raise ValueError(f"expected vector of length {dim}, got {arr.size}")
     return arr
+
 
 def _as_matrix(diag_or_full, dim):
     arr = np.asarray(diag_or_full, dtype=float)
@@ -69,6 +72,7 @@ def _as_matrix(diag_or_full, dim):
     if arr.shape == (dim, dim):
         return arr
     raise ValueError(f"matrix must be ({dim},{dim}) or diag length {dim}")
+
 
 def _constraint_box_from_named(mapping: Dict[str, Any], order: list[str]) -> ConstraintBox:
     """
@@ -96,6 +100,16 @@ def load_yaml(path: str | Path) -> Dict[str, Any]:
     if not isinstance(data, dict):
         raise ValueError("Top-level YAML must be a mapping")
     return data
+
+
+def save_yaml(data: Dict[str, Any], path: str | Path) -> None:
+    """
+    Save a Python dict to a YAML file (creates parent dirs).
+    """
+    p = Path(path)
+    p.parent.mkdir(parents=True, exist_ok=True)
+    with p.open("w") as f:
+        yaml.safe_dump(data, f, sort_keys=False)
 
 
 def build_robot_arm_demo_config(cfg: Dict[str, Any]) -> Tuple[RobotArmDemoConfig, Dict[str, Any]]:  # noqa: C901, PLR0912, PLR0915
@@ -199,27 +213,32 @@ def build_robot_arm_demo_config(cfg: Dict[str, Any]) -> Tuple[RobotArmDemoConfig
             extras["x0_twin"] = _as_state(ini["twin_x0"], expected_dim=4)
     return demo, extras
 
-     # --- nominal ---
+    # --- nominal ---
     if "nominal" in cfg and isinstance(cfg["nominal"], dict):
         nom = cfg["nominal"]
         # Defaults
         x_goal = _as_vec(nom.get("x_goal", [0.0, 0.0, 0.0, 0.0]), 4)
         u_goal = _as_vec(nom.get("u_goal", [0.0, 0.0]), 2)
-        Q  = _as_matrix(nom.get("Q",  [10.0, 10.0, 1.0, 1.0]), 4)
-        R  = _as_matrix(nom.get("R",  [0.1, 0.1]), 2)
+        Q = _as_matrix(nom.get("Q", [10.0, 10.0, 1.0, 1.0]), 4)
+        R = _as_matrix(nom.get("R", [0.1, 0.1]), 2)
         Qf = _as_matrix(nom.get("Qf", [50.0, 50.0, 5.0, 5.0]), 4)
         N_nom = int(nom.get("N", extras.get("N", 800)))
         # Optional limits: default to U box from this config
         u_low = _as_vec(nom.get("u_low", U.low.tolist()), 2)
         u_high = _as_vec(nom.get("u_high", U.high.tolist()), 2)
         extras["nominal"] = {
-            "x_goal": x_goal, "u_goal": u_goal, "Q": Q, "R": R, "Qf": Qf, "N": N_nom,
-            "u_low": u_low, "u_high": u_high,
+            "x_goal": x_goal,
+            "u_goal": u_goal,
+            "Q": Q,
+            "R": R,
+            "Qf": Qf,
+            "N": N_nom,
+            "u_low": u_low,
+            "u_high": u_high,
             "riccati_tol": float(nom.get("riccati_tol", 1e-9)),
             "riccati_maxit": int(nom.get("riccati_maxit", 10000)),
             "fd_eps": float(nom.get("fd_eps", 1e-6)),
         }
-
 
 
 def save_config_example(path: str | Path) -> None:
@@ -272,4 +291,5 @@ __all__ = [
     "build_robot_arm_demo_config",
     "load_yaml",
     "save_config_example",
+    "save_yaml",
 ]

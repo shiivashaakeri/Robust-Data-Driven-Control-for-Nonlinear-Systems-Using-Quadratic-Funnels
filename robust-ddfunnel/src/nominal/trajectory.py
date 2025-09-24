@@ -25,6 +25,16 @@ from models.discretization import discrete_jacobians_fd, make_stepper
 
 Array = np.ndarray
 
+
+def _gravity_torque(model, q):
+    # Prefer a public method if present; fallback to internal _gravity.
+    if hasattr(model, "gravity_torque"):
+        return np.asarray(model.gravity_torque(q), float)
+    if hasattr(model, "_gravity"):
+        return np.asarray(model._gravity(q), float)  # type: ignore[attr-defined]
+    return np.zeros(model.m, float)
+
+
 @dataclass(frozen=True)
 class NominalLQRSettings:
     """
@@ -42,6 +52,7 @@ class NominalLQRSettings:
     riccati_maxit: maximum number of iterations for DARE fixed-point iteration
     fd_eps       : finite-difference step size for Jacobians
     """
+
     Q: Array
     R: Array
     Qf: Array
@@ -53,6 +64,9 @@ class NominalLQRSettings:
     riccati_tol: float = 1e-9
     riccati_maxit: int = 10_000
     fd_eps: float = 1e-6
+    ramp_seconds: float = 2.0
+    input_smoothing_alpha: float = 0.35
+    gravity_feedforward: bool = True
 
     def validate(self, n: int, m: int) -> None:
         Q, R, Qf = np.asarray(self.Q, float), np.asarray(self.R, float), np.asarray(self.Qf, float)
@@ -69,6 +83,11 @@ class NominalLQRSettings:
             raise ValueError(f"u_low must have length {m}")
         if self.u_high is not None and np.asarray(self.u_high, float).size != m:
             raise ValueError(f"u_high must have length {m}")
+        if self.ramp_seconds < 0.0:
+            raise ValueError("ramp_seconds must be non-negative")
+        if not (0.0 <= self.input_smoothing_alpha <= 1.0):
+            raise ValueError("input_smoothing_alpha must be between 0 and 1")
+
 
 def _solve_dare_iterative(
     A: Array,
@@ -94,6 +113,7 @@ def _solve_dare_iterative(
         P = P_next
     return P
 
+
 def _dlqr_gain(
     A: Array,
     B: Array,
@@ -111,12 +131,12 @@ def _dlqr_gain(
     K = np.linalg.solve(S, B.T @ P @ A)
     return K, P
 
+
 def lqr_nominal_plan(
     twin_model,
     settings: NominalLQRSettings,
     x0: Array,
 ) -> Tuple[Array, Array, Array, float]:
-
     """
     Plan a nominal trajectory on the digital twin using constant DLQR around (x_goal, u_goal).
 
@@ -160,23 +180,42 @@ def lqr_nominal_plan(
     Uhat = np.empty((settings.N, m), float)
     Xhat[0] = x0
 
+    def _phi(s):
+        return 3.0 * s * s - 2.0 * s * s * s
+
+    alpha = float(settings.input_smoothing_alpha)
+    Tramp = float(settings.ramp_seconds)
+    dt = float(twin_model.dt)
+
     for k in range(settings.N):
-        u_k = u_goal + K @ (x_goal - Xhat[k])
+        s = 1.0 if Tramp <= 0 else min(1.0, (k * dt) / Tramp)
+        w = _phi(s)
+
+        x_ref = x0 + w * (x_goal - x0)
+
+        u_ff = _gravity_torque(twin_model, x_ref[:2]) if settings.gravity_feedforward else u_goal
+
+        u_raw = u_ff + K @ (x_ref - Xhat[k])
+
+        if k == 0 or alpha >= 1.0:
+            u_cmd = u_raw
+        elif alpha <= 0.0:
+            u_cmd = Uhat[k - 1]
+        else:
+            u_cmd = (1.0 - alpha) * Uhat[k - 1] + alpha * u_raw
 
         if settings.u_low is not None:
-            u_k = np.maximum(u_k, np.asarray(settings.u_low, float))
+            u_cmd = np.maximum(u_cmd, np.asarray(settings.u_low, float))
         if settings.u_high is not None:
-            u_k = np.minimum(u_k, np.asarray(settings.u_high, float))
-        Uhat[k] = u_k
+            u_cmd = np.minimum(u_cmd, np.asarray(settings.u_high, float))
+        Uhat[k] = u_cmd
         Xhat[k + 1] = step(Xhat[k], Uhat[k])
 
     # Increment bound v over state-input pairs
-    uN = u_goal
     v = 0.0
     for j in range(settings.N - 1):
         xu_j = np.concatenate((Xhat[j], Uhat[j]))
-        xu_j1 = np.concatenate((Xhat[j + 1], Uhat[j + 1] if j+1 < settings.N else uN))
+        xu_j1 = np.concatenate((Xhat[j + 1], Uhat[j + 1] if j + 1 < settings.N else u_goal))
         v = max(v, np.linalg.norm(xu_j1 - xu_j, ord=2))
 
     return Xhat, Uhat, K, v
-

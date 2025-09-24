@@ -20,6 +20,7 @@ from __future__ import annotations
 import argparse
 import pathlib
 import sys
+from pathlib import Path
 from typing import Any, Dict, Tuple
 
 import matplotlib.pyplot as plt
@@ -28,6 +29,7 @@ import numpy as np
 # ensure src/ is importable
 sys.path.append(str(pathlib.Path(__file__).resolve().parents[1] / "src"))
 
+from core.constants_io import NominalConstants, save_constants_yaml  # pyright: ignore[reportMissingImports]
 from models.discretization import discrete_jacobians_fd, make_stepper  # pyright: ignore[reportMissingImports]
 from models.robot_arm_2dof import RobotArm2DOF  # pyright: ignore[reportMissingImports]
 from nominal.trajectory import NominalLQRSettings, lqr_nominal_plan  # pyright: ignore[reportMissingImports]
@@ -234,6 +236,9 @@ def main():  # noqa: PLR0915
         riccati_tol=float(nom.get("riccati_tol", 1e-9)),
         riccati_maxit=int(nom.get("riccati_maxit", 10000)),
         fd_eps=float(nom.get("fd_eps", 1e-6)),
+        ramp_seconds=float(nom.get("ramp_seconds", 2.0)),
+        input_smoothing_alpha=float(nom.get("input_smoothing_alpha", 0.35)),
+        gravity_feedforward=bool(nom.get("gravity_feedforward", True)),
     )
 
     Xhat, Uhat, K, v = lqr_nominal_plan(twin, settings, x0=np.asarray(x0_twin, float))
@@ -274,14 +279,19 @@ def main():  # noqa: PLR0915
         input_names = ["tau1 (N·m)", "tau2 (N·m)"]
 
     fig_s, _ = plot_states(
-        [{"label": "Twin nominal", "t": t_states, "X": Xhat, "style": {"linewidth": 1.6}}],
-        names=state_names,
-        title="Nominal states (digital twin)",
+    [{"label": "Twin nominal", "t": t_states, "X": Xhat, "style": {"linewidth": 1.6}}],
+    names=state_names,
+    title="Nominal states (digital twin)",
+    x_bounds=(demo.X.low, demo.X.high),
+    show_bounds_in_legend=False,
     )
+
     fig_u, _ = plot_inputs(
         [{"label": "Twin nominal", "t": t_inputs, "U": Uhat, "style": {"linewidth": 1.6}}],
         names=input_names,
         title="Nominal inputs (digital twin)",
+        u_bounds=(demo.U.low, demo.U.high),
+        show_bounds_in_legend=False,
     )
 
     # --- Save artifacts (no timestamps) ---
@@ -343,6 +353,25 @@ def main():  # noqa: PLR0915
             plt.show()
         else:
             plt.close(fig)
+
+    consts_dir = Path("data/nominal_constants")
+    consts_dir.mkdir(parents=True, exist_ok=True)
+    consts_path = consts_dir / f"constants_{slug}.yaml"
+
+    consts = NominalConstants(
+        dt = float(dt),
+        N = int(settings.N),
+        v = float(v),
+        gamma = None,
+        L_J = None,
+        L_r = None,
+        C = None,
+        T_tilde = None,
+        x_goal = settings.x_goal,
+        u_goal = settings.u_goal,
+    )
+    save_constants_yaml(consts_path, consts)
+    print(f"Saved constants   ➜ {consts_path}")
 
 
 if __name__ == "__main__":
