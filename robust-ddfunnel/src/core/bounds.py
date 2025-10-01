@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Callable, Literal, Optional, Sequence, Tuple, Union
+from typing import Callable, Literal, Optional, Tuple, Union
 
 import numpy as np
 
@@ -369,6 +369,84 @@ def estimate_Lr_discrete(  # noqa: PLR0915, C901, PLR0912
     return float(Lr)
 
 
+# def beta_from_segment(
+#     etas,
+#     xis,
+#     k_i: int,
+#     C: float,
+#     gamma: float,
+#     L_r: float,
+#     *,
+#     ks: Optional[Sequence[int]] = None,
+#     k_start: Optional[int] = None,
+# ) -> float:
+#     """
+#     Aggregate β over a data window (eq. β_def in the paper):
+
+#         β_i = Σ_k ( C*|k - k_i| * ||[η(k); ξ(k)]||_2 + gamma + L_r * ||[η(k); ξ(k)]||_2^2 )^2
+
+#     Parameters
+#     ----------
+#     etas : sequence of (n,) arrays
+#         Deviation states η(k) collected over the data window (in order).
+#     xis : sequence of (m,) arrays
+#         Input deviations ξ(k) collected over the data window (in order).
+#     k_i : int
+#         Start index of segment i.
+#     C : float
+#         The linear-in-time bound coefficient (C = L_J * v).
+#     gamma : float
+#         Uniform mismatch bound.
+#     L_r : float
+#         Quadratic remainder coefficient for linearization error.
+#     ks : sequence of int, optional
+#         Absolute time indices for each sample in `etas`/`xis` (same length). If provided,
+#         |k - k_i| is computed exactly as abs(ks[t] - k_i).
+#     k_start : int, optional
+#         Absolute index of the first sample in this window (k_i^D). If provided (and `ks` is not),
+#         distances are abs((k_start + t) - k_i), t=0..L-1.
+
+#     Returns
+#     -------
+#     float
+#         β_i value.
+
+#     Notes
+#     -----
+#     - If neither `ks` nor `k_start` is provided, we fallback to using the local window
+#       index t=0..L-1 as |k - k_i|; this is OK only if your window starts at k_i
+#       (i.e., k_start == k_i). Prefer passing `k_start` (k_i^D) or `ks`.
+#     """
+#     L = min(len(etas), len(xis))
+#     if L == 0:
+#         return 0.0
+
+#     # Build ||[η; ξ]||_2 per sample
+#     z_norms = np.empty(L, dtype=float)
+#     for t in range(L):
+#         e = np.asarray(etas[t], dtype=float).ravel()
+#         u = np.asarray(xis[t], dtype=float).ravel()
+#         z_norms[t] = float(np.linalg.norm(np.concatenate([e, u]), ord=2))
+
+#     # Distances |k - k_i| in "steps"
+#     if ks is not None:
+#         ks_arr = np.asarray(ks, dtype=int)
+#         if ks_arr.size != L:
+#             raise ValueError("len(ks) must match number of samples in etas/xis")
+#         dists = np.abs(ks_arr - int(k_i)).astype(float)
+#     elif k_start is not None:
+#         # samples correspond to k = k_start + t
+#         dists = np.abs((int(k_start) + np.arange(L)) - int(k_i)).astype(float)
+#     else:
+#         # Fallback: treat local index as distance (only correct if k_start == k_i)
+#         dists = np.arange(L, dtype=float)
+
+#     # term_k = C*|k-k_i|*||z|| + gamma + L_r*||z||^2
+#     terms = C * dists * z_norms + gamma + L_r * (z_norms**2)
+#     beta = float(np.sum(terms**2))
+#     return beta
+
+
 def beta_from_segment(
     etas,
     xis,
@@ -376,14 +454,11 @@ def beta_from_segment(
     C: float,
     gamma: float,
     L_r: float,
-    *,
-    ks: Optional[Sequence[int]] = None,
-    k_start: Optional[int] = None,
+    k_start: int | None = None,
+    z_clip: float | None = None,
 ) -> float:
     """
-    Aggregate β over a data window (eq. β_def in the paper):
-
-        β_i = Σ_k ( C*|k - k_i| * ||[η(k); ξ(k)]||_2 + gamma + L_r * ||[η(k); ξ(k)]||_2^2 )^2
+    Implements paper Equation 42: β_i = Σ_{k∈T_i^D} (C|k-k_i| ||[η(k); ξ(k)]|| + gamma + L_r ||[η(k); ξ(k)]||²)²
 
     Parameters
     ----------
@@ -399,49 +474,33 @@ def beta_from_segment(
         Uniform mismatch bound.
     L_r : float
         Quadratic remainder coefficient for linearization error.
-    ks : sequence of int, optional
-        Absolute time indices for each sample in `etas`/`xis` (same length). If provided,
-        |k - k_i| is computed exactly as abs(ks[t] - k_i).
     k_start : int, optional
-        Absolute index of the first sample in this window (k_i^D). If provided (and `ks` is not),
+        Absolute index of the first sample in this window (k_i^D). If provided,
         distances are abs((k_start + t) - k_i), t=0..L-1.
-
-    Returns
-    -------
-    float
-        β_i value.
-
-    Notes
-    -----
-    - If neither `ks` nor `k_start` is provided, we fallback to using the local window
-      index t=0..L-1 as |k - k_i|; this is OK only if your window starts at k_i
-      (i.e., k_start == k_i). Prefer passing `k_start` (k_i^D) or `ks`.
+    z_clip : float, optional
+        Optional clipping to avoid crazy β from a few outliers.
     """
     L = min(len(etas), len(xis))
     if L == 0:
         return 0.0
 
-    # Build ||[η; ξ]||_2 per sample
-    z_norms = np.empty(L, dtype=float)
-    for t in range(L):
-        e = np.asarray(etas[t], dtype=float).ravel()
-        u = np.asarray(xis[t], dtype=float).ravel()
-        z_norms[t] = float(np.linalg.norm(np.concatenate([e, u]), ord=2))
+    s = 0.0
+    for idx, (e, xi) in enumerate(zip(etas, xis)):
+        z = np.concatenate([e, xi])
+        if z_clip is not None:
+            z = np.clip(z, -z_clip, z_clip)
+        z_norm = float(np.linalg.norm(z))
 
-    # Distances |k - k_i| in "steps"
-    if ks is not None:
-        ks_arr = np.asarray(ks, dtype=int)
-        if ks_arr.size != L:
-            raise ValueError("len(ks) must match number of samples in etas/xis")
-        dists = np.abs(ks_arr - int(k_i)).astype(float)
-    elif k_start is not None:
-        # samples correspond to k = k_start + t
-        dists = np.abs((int(k_start) + np.arange(L)) - int(k_i)).astype(float)
-    else:
-        # Fallback: treat local index as distance (only correct if k_start == k_i)
-        dists = np.arange(L, dtype=float)
+        # Calculate |k - k_i| as in paper
+        if k_start is not None:
+            k = k_start + idx  # absolute time index
+            dist = abs(k - k_i)
+        else:
+            # Fallback: treat local index as distance (only correct if k_start == k_i)
+            dist = idx
 
-    # term_k = C*|k-k_i|*||z|| + gamma + L_r*||z||^2
-    terms = C * dists * z_norms + gamma + L_r * (z_norms**2)
-    beta = float(np.sum(terms**2))
-    return beta
+        # Paper Equation 42: term_k = C*|k-k_i|*||z|| + gamma + L_r*||z||^2
+        term = C * dist * z_norm + gamma + L_r * (z_norm**2)
+        s += term * term
+
+    return float(s)

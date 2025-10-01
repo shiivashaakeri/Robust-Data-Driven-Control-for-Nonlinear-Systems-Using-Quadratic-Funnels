@@ -13,7 +13,6 @@ except Exception:  # pragma: no cover
 
 
 def _check_shapes(Q, Y):
-    """Validate shapes and return (n, m). Q: (n,n), Y: (m,n)."""
     Q = np.asarray(Q) if isinstance(Q, np.ndarray) else Q
     n = Q.shape[0]
     if Q.shape != (n, n):
@@ -24,48 +23,27 @@ def _check_shapes(Q, Y):
     return n, m
 
 
-def build_M_numpy(Q: np.ndarray, Y: np.ndarray, alpha: float) -> np.ndarray:
-    """
-    Assemble the numeric M block from the paper:
-
-        M = [[ alpha * Q,  0,  0,  0,  0],
-             [  0,  0,  0,  0,  Q],
-             [  0,  0,  0,  0,  Y],
-             [  0,  0,  0,  0,  Q],
-             [  0,  Q, Yᵀ,  Q,  Q]]
-
-    Block-row/column sizes = [n, n, m, n, n] with Q∈R^{n x n}, Y∈R^{m x n}.
-    """
+def build_M_numpy(Q: np.ndarray, Y: np.ndarray, alpha: float, nu: float = 0.0) -> np.ndarray:
     n, m = _check_shapes(Q, Y)
     Znn = np.zeros((n, n))
     Znm = np.zeros((n, m))
     Zmn = np.zeros((m, n))
     Zmm = np.zeros((m, m))
 
-    M = np.block(
+    S = np.block(
         [
-            # row 1 (n)
-            [alpha * Q, Znn, Znm, Znn, Znn],
-            # row 2 (n)
-            [Znn, Znn, Znm, Znn, Q],
-            # row 3 (m)
-            [Zmn, Zmn, Zmm, Zmn, Y],
-            # row 4 (n)
-            [Znn, Znn, Znm, Znn, Q],
-            # row 5 (n)
-            [Znn, Q, Y.T, Q, Q],
+            [alpha * Q - nu * np.eye(n), Znn, Znm, Znn, Znm, Znn],
+            [Znn, -Q, -Y.T, -Q, -Y.T, Znn],
+            [Zmn, -Y, Zmm, -Y, Zmm, Y],
+            [Znn, -Q, -Y.T, -Q, -Y.T, Znn],
+            [Zmn, -Y, Zmm, -Y, Zmm, Y],
+            [Znn, Znn, Y.T, Znn, Y.T, Q],
         ]
     )
-    return M
+    return S
 
 
-def build_M_cvxpy(Q, Y, alpha: float):
-    """
-    Assemble the CVXPY M block using cp.bmat with the same layout
-    (use this in the SDP; Q and Y can be Variables/Params/Expressions).
-
-    Requires cvxpy. Raises if cvxpy isn't available.
-    """
+def build_M_cvxpy(Q, Y, alpha: float, nu=None):
     if not _HAS_CVXPY:
         raise RuntimeError("cvxpy is not available; install it to use build_M_cvxpy.")
 
@@ -76,18 +54,16 @@ def build_M_cvxpy(Q, Y, alpha: float):
     Zmn = cp.Constant(np.zeros((m, n)))
     Zmm = cp.Constant(np.zeros((m, m)))
 
-    M = cp.bmat(
+    nu_term = Znn if nu is None else nu * cp.Constant(np.eye(n))
+
+    S = cp.bmat(
         [
-            # row 1 (n)
-            [alpha * Q, Znn, Znm, Znn, Znn],
-            # row 2 (n)
-            [Znn, Znn, Znm, Znn, Q],
-            # row 3 (m)
-            [Zmn, Zmn, Zmm, Zmn, Y],
-            # row 4 (n)
-            [Znn, Znn, Znm, Znn, Q],
-            # row 5 (n)
-            [Znn, Q, Y.T, Q, Q],
+            [alpha * Q - nu_term, Znn, Znm, Znn, Znm, Znn],
+            [Znn, -Q, -Y.T, -Q, -Y.T, Znn],
+            [Zmn, -Y, Zmm, -Y, Zmm, Y],
+            [Znn, -Q, -Y.T, -Q, -Y.T, Znn],
+            [Zmn, -Y, Zmm, -Y, Zmm, Y],
+            [Znn, Znn, Y.T, Znn, Y.T, Q],
         ]
     )
-    return M
+    return S

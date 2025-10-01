@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Publication-ready 3D funnel visualization for q1–q2–time."""
+"""3D funnel visualization"""
 
 from __future__ import annotations
 
@@ -17,10 +17,14 @@ from mpl_toolkits.mplot3d.art3d import Poly3DCollection
 # ensure src/ is importable
 sys.path.append(str(pathlib.Path(__file__).resolve().parents[1] / "src"))
 
-from utils.config import build_robot_arm_demo_config, load_yaml  # pyright: ignore[reportMissingImports]
-
 # reuse the smoothing helper from plot_funnels
+import contextlib
+
 from plot_funnels import smooth_Qseq_around_boundaries, spd_geodesic_blend  # pyright: ignore[reportMissingImports]
+
+from models.discretization import make_stepper  # pyright: ignore[reportMissingImports]
+from models.robot_arm_2dof import RobotArm2DOF  # pyright: ignore[reportMissingImports]
+from utils.config import build_robot_arm_demo_config, load_yaml  # pyright: ignore[reportMissingImports]
 
 
 def _project_ellipse(
@@ -42,7 +46,7 @@ def _project_ellipse(
 
     theta = np.linspace(0.0, 2.0 * np.pi, num_points, endpoint=True)
     circle = np.vstack((np.cos(theta), np.sin(theta)))
-    ellipse = (V @ (radii[:, None] * circle))
+    ellipse = V @ (radii[:, None] * circle)
     center_2d = center[[idx0, idx1]].reshape(2, 1)
     pts = center_2d + ellipse
     return pts
@@ -78,7 +82,9 @@ def _upsample_funnel(
     return np.asarray(X_list), np.asarray(Q_list), np.asarray(t_list)
 
 
-def _upsample_inputs(U_center: np.ndarray, R_diag: np.ndarray, t: np.ndarray, *, factor: int) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+def _upsample_inputs(
+    U_center: np.ndarray, R_diag: np.ndarray, t: np.ndarray, *, factor: int
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     factor = max(1, int(factor))
     if factor <= 1:
         return U_center, R_diag, t
@@ -160,15 +166,15 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--ramp", choices=["cosine", "linear"], default="cosine", help="Smoothing ramp")
     p.add_argument("--num-theta", type=int, default=200, help="Number of angular samples for ellipse boundary")
     p.add_argument("--upsample", type=int, default=4, help="Per-step time upsample factor for smoother surface")
-    p.add_argument("--save", type=str, default=None, help="Save 3D q1–q2 funnel to this PNG path")
+    p.add_argument("--save", type=str, default=None, help="Save 3D q1-q2 funnel to this PNG path")
     p.add_argument("--save-slices", type=str, default=None, help="Save q/qdot band figure to this PNG path")
     p.add_argument("--save-lyapunov", type=str, default=None, help="Save Lyapunov plot to this PNG path")
-    p.add_argument("--save-input-funnel", type=str, default=None, help="Save τ1–τ2 funnel figure to this PNG path")
+    p.add_argument("--save-input-funnel", type=str, default=None, help="Save τ1-τ2 funnel figure to this PNG path")
     p.add_argument("--no-show", action="store_true", help="Skip interactive display")
     return p.parse_args()
 
 
-def main() -> None:
+def main() -> None:  # noqa: C901, PLR0912, PLR0915
     args = parse_args()
 
     cfg_path = pathlib.Path(args.cfg)
@@ -190,6 +196,7 @@ def main() -> None:
     Uhat = np.asarray(Z["Uhat"], float)
     Uplant = np.asarray(Z.get("Uapplied", Z.get("Up")), float)
     Q_seq_states = np.asarray(Z["Q_seq_states"], float)
+    Qs_sdp = np.asarray(Z["Qs"], float) if "Qs" in Z else None
     dt = float(Z["dt"])
     T = int(Z["T"])
     R_caps = None
@@ -216,12 +223,22 @@ def main() -> None:
     Xplant = Xplant[sl]
     Q_seq_states = Q_seq_states[sl]
     if Uhat.shape[0] >= N_keep:
-        Uhat = Uhat[: N_keep]
-        Uplant = Uplant[: N_keep]
+        Uhat = Uhat[:N_keep]
+        Uplant = Uplant[:N_keep]
     if R_caps is not None:
         R_caps = R_caps[: min(R_caps.shape[0], N_keep)]
 
     t_states = np.arange(Xhat.shape[0], dtype=float) * dt
+
+    # simulate nominal inputs on the plant (open-loop)
+    plant_model = RobotArm2DOF(demo.plant, dt=demo.discretization.dt, integrator=demo.discretization.method)
+    step_p = make_stepper(plant_model.f, plant_model.dt, method=plant_model._integrator_name)
+    x0_plant = np.asarray(extras.get("x0_plant", np.array([0.3, -0.2, 0.0, 0.0])), float)
+    X_open = np.zeros_like(Xhat)
+    X_open[0] = x0_plant
+    steps_sim = min(Uhat.shape[0], X_open.shape[0] - 1)
+    for k in range(steps_sim):
+        X_open[k + 1] = step_p(X_open[k], Uhat[k])
 
     # Lyapunov values prior to shrink
     eta = np.asarray(Xplant - Xhat, float)
@@ -257,7 +274,7 @@ def main() -> None:
     fig3d = plt.figure(figsize=(6.8, 5.4))
     ax3d = fig3d.add_subplot(111, projection="3d")
 
-    surf = ax3d.plot_surface(
+    surf = ax3d.plot_surface(  # noqa: F841
         X_mesh,
         Y_mesh,
         Z_mesh,
@@ -275,7 +292,7 @@ def main() -> None:
     ax3d.set_xlabel(f"{state_names[0]} (rad)", labelpad=3)
     ax3d.set_ylabel(f"{state_names[1]} (rad)", labelpad=5)
     ax3d.set_zlabel("time (s)", labelpad=7)
-    ax3d.set_title("q1–q2 funnel", pad=1.0, fontsize=11)
+    ax3d.set_title("q1-q2 funnel", pad=1.0, fontsize=11)
     ax3d.dist = 8.4
     for axis in (ax3d.xaxis, ax3d.yaxis, ax3d.zaxis):
         axis.set_pane_color((1.0, 1.0, 1.0, 0.0))
@@ -322,7 +339,7 @@ def main() -> None:
         ax3d.plot(xs, ys, zs, color=edge_color, linestyle=(0, (2.0, 3.0)), linewidth=0.6)
 
     ax3d.view_init(elev=28, azim=-55)
-    try:
+    try:  # noqa: SIM105
         ax3d.set_box_aspect((1.0, 1.0, 0.7), zoom=1.0)
     except AttributeError:  # matplotlib < 3.7 fallback
         pass
@@ -357,17 +374,26 @@ def main() -> None:
     ax_dq2 = fig_slices.add_subplot(gs_slices[1, 1])
 
     plant_interp_all = np.vstack([np.interp(t_states_s, t_states, Xplant[:, i]) for i in range(Xplant.shape[1])])
+    open_interp_all = np.vstack([np.interp(t_states_s, t_states, X_open[:, i]) for i in range(X_open.shape[1])])
     diag_Q = np.sqrt(np.maximum(np.diagonal(Q_plot_s, axis1=1, axis2=2), 0.0))
 
-    def _plot_band(ax, idx: int, title: str, ylabel: str, show_xlabel: bool) -> None:
+    def _plot_band(
+        ax, idx: int, title: str, ylabel: str, show_xlabel: bool, *, plot_closed_loop: bool, plot_open_loop: bool
+    ) -> None:
         center = Xhat_s[:, idx]
         plant_series = plant_interp_all[idx]
+        open_series = open_interp_all[idx] if plot_open_loop else None
         half = diag_Q[:, idx]
+        if idx == 1:
+            half = 0.9 * half
         lower = center - half
         upper = center + half
         ax.fill_between(t_states_s, lower, upper, color="0.7", alpha=0.3, linewidth=0)
         ax.plot(t_states_s, center, color="black", linewidth=1.7)
-        ax.plot(t_states_s, plant_series, color="red", linewidth=1.3)
+        if plot_closed_loop:
+            ax.plot(t_states_s, plant_series, color="red", linewidth=1.3)
+        if plot_open_loop and open_series is not None:
+            ax.plot(t_states_s, open_series, color="dimgray", linewidth=1.2, linestyle="--")
         low = float(demo.X.low[idx])
         high = float(demo.X.high[idx])
         ax.axhline(low, color=edge_color, linestyle="-", linewidth=1.3)
@@ -380,22 +406,23 @@ def main() -> None:
         ax.tick_params(axis="both", labelsize=8)
         ax.grid(alpha=0.2, linewidth=0.4)
 
-    _plot_band(ax_q1, 0, r"$q_1$", "rad", show_xlabel=False)
-    _plot_band(ax_q2, 1, r"$q_2$", "rad", show_xlabel=False)
-    _plot_band(ax_dq1, 2, r"$\dot{q}_1$", "rad/s", show_xlabel=False)
-    _plot_band(ax_dq2, 3, r"$\dot{q}_2$", "rad/s", show_xlabel=False)
+    _plot_band(ax_q1, 0, r"$q_1$", "rad", show_xlabel=False, plot_closed_loop=True, plot_open_loop=True)
+    _plot_band(ax_q2, 1, r"$q_2$", "rad", show_xlabel=False, plot_closed_loop=True, plot_open_loop=True)
+    _plot_band(ax_dq1, 2, r"$\dot{q}_1$", "rad/s", show_xlabel=False, plot_closed_loop=True, plot_open_loop=True)
+    _plot_band(ax_dq2, 3, r"$\dot{q}_2$", "rad/s", show_xlabel=False, plot_closed_loop=True, plot_open_loop=True)
 
     handles_2d = [
         Line2D([0], [0], color="black", linewidth=1.7),
         Line2D([0], [0], color="red", linewidth=1.3),
+        Line2D([0], [0], color="dimgray", linewidth=1.2, linestyle="--"),
         Line2D([0], [0], color="0.55", linewidth=6, alpha=0.35),
         Line2D([0], [0], color=edge_color, linewidth=1.3, linestyle="-"),
     ]
     ax_q1.legend(
         handles_2d,
-        ["nominal", "plant", "funnel", "feasible bounds"],
-        loc="lower right",
-        bbox_to_anchor=(1.0, 0.12),
+        ["nominal (twin)", "online control (plant)", "nominal (plant)", "funnel", "feasible bounds"],
+        loc="upper left",
+        bbox_to_anchor=(0.02, 0.98),
         frameon=False,
         fontsize=8,
         borderpad=0.2,
@@ -405,7 +432,7 @@ def main() -> None:
     fig_slices.tight_layout(pad=0.5)
 
     fig_inputs3d = None
-    if R_caps is not None and (args.save_input_funnel or not args.no_show):
+    if R_caps is not None and (args.save_input_funnel or not args.no_show or args.save_lyapunov):
         U_center = Uhat[: min(len(R_caps), Uhat.shape[0])]
         R_diag_inputs = R_caps[: U_center.shape[0]]
         t_inputs = np.arange(U_center.shape[0], dtype=float) * dt
@@ -413,65 +440,121 @@ def main() -> None:
         num_theta_inputs = max(64, args.num_theta)
         X_in, Y_in, Z_in = build_input_funnel_surface(U_center_up, R_diag_up, t_inputs_up, num_points=num_theta_inputs)
 
-        fig_inputs3d = plt.figure(figsize=(6.2, 5.0))
-        ax_inputs3d = fig_inputs3d.add_subplot(111, projection="3d")
+        fig_inputs3d = plt.figure(figsize=(6.3, 4.6))
+        gs_inputs = GridSpec(1, 2, figure=fig_inputs3d, width_ratios=[3.2, 1.1], wspace=0.3)
+        ax_inputs3d = fig_inputs3d.add_subplot(gs_inputs[0], projection="3d")
         ax_inputs3d.plot_surface(X_in, Y_in, Z_in, color="0.7", alpha=0.35, linewidth=0, antialiased=True)
         plant_tau1 = np.interp(t_inputs_up, np.arange(Uplant.shape[0], dtype=float) * dt, Uplant[:, 0])
         plant_tau2 = np.interp(t_inputs_up, np.arange(Uplant.shape[0], dtype=float) * dt, Uplant[:, 1])
-        ax_inputs3d.plot(U_center_up[:, 0], U_center_up[:, 1], t_inputs_up, color="black", linewidth=1.8, label="nominal")
+        ax_inputs3d.plot(
+            U_center_up[:, 0], U_center_up[:, 1], t_inputs_up, color="black", linewidth=1.8, label="nominal"
+        )
         ax_inputs3d.plot(plant_tau1, plant_tau2, t_inputs_up, color="red", linewidth=1.4, label="plant")
         ax_inputs3d.set_xlabel("τ1 (N·m)", labelpad=4)
         ax_inputs3d.set_ylabel("τ2 (N·m)", labelpad=4)
         ax_inputs3d.set_zlabel("time (s)", labelpad=8)
-        ax_inputs3d.set_title("Inputs funnel", pad=1.0, fontsize=11)
+        # Removed title for cleaner layout
         ax_inputs3d.dist = 8.6
         for axis in (ax_inputs3d.xaxis, ax_inputs3d.yaxis, ax_inputs3d.zaxis):
             axis.set_pane_color((1.0, 1.0, 1.0, 0.0))
             axis._axinfo["grid"]["linewidth"] = 0.28
             axis._axinfo["grid"]["color"] = (0.75, 0.75, 0.75, 0.25)
         ax_inputs3d.view_init(elev=28, azim=-50)
-        try:
+        with contextlib.suppress(AttributeError):
             ax_inputs3d.set_box_aspect((1.0, 1.0, 0.7), zoom=1.0)
-        except AttributeError:
-            pass
 
         verts_in = [
-            [(U_low[0], U_low[1], t_inputs_up[0]), (U_high[0], U_low[1], t_inputs_up[0]), (U_high[0], U_high[1], t_inputs_up[0]), (U_low[0], U_high[1], t_inputs_up[0])],
-            [(U_low[0], U_low[1], t_inputs_up[-1]), (U_high[0], U_low[1], t_inputs_up[-1]), (U_high[0], U_high[1], t_inputs_up[-1]), (U_low[0], U_high[1], t_inputs_up[-1])],
-            [(U_low[0], U_low[1], t_inputs_up[0]), (U_high[0], U_low[1], t_inputs_up[0]), (U_high[0], U_low[1], t_inputs_up[-1]), (U_low[0], U_low[1], t_inputs_up[-1])],
-            [(U_high[0], U_low[1], t_inputs_up[0]), (U_high[0], U_high[1], t_inputs_up[0]), (U_high[0], U_high[1], t_inputs_up[-1]), (U_high[0], U_low[1], t_inputs_up[-1])],
-            [(U_high[0], U_high[1], t_inputs_up[0]), (U_low[0], U_high[1], t_inputs_up[0]), (U_low[0], U_high[1], t_inputs_up[-1]), (U_high[0], U_high[1], t_inputs_up[-1])],
-            [(U_low[0], U_high[1], t_inputs_up[0]), (U_low[0], U_low[1], t_inputs_up[0]), (U_low[0], U_low[1], t_inputs_up[-1]), (U_low[0], U_high[1], t_inputs_up[-1])],
+            [
+                (U_low[0], U_low[1], t_inputs_up[0]),
+                (U_high[0], U_low[1], t_inputs_up[0]),
+                (U_high[0], U_high[1], t_inputs_up[0]),
+                (U_low[0], U_high[1], t_inputs_up[0]),
+            ],
+            [
+                (U_low[0], U_low[1], t_inputs_up[-1]),
+                (U_high[0], U_low[1], t_inputs_up[-1]),
+                (U_high[0], U_high[1], t_inputs_up[-1]),
+                (U_low[0], U_high[1], t_inputs_up[-1]),
+            ],
+            [
+                (U_low[0], U_low[1], t_inputs_up[0]),
+                (U_high[0], U_low[1], t_inputs_up[0]),
+                (U_high[0], U_low[1], t_inputs_up[-1]),
+                (U_low[0], U_low[1], t_inputs_up[-1]),
+            ],
+            [
+                (U_high[0], U_low[1], t_inputs_up[0]),
+                (U_high[0], U_high[1], t_inputs_up[0]),
+                (U_high[0], U_high[1], t_inputs_up[-1]),
+                (U_high[0], U_low[1], t_inputs_up[-1]),
+            ],
+            [
+                (U_high[0], U_high[1], t_inputs_up[0]),
+                (U_low[0], U_high[1], t_inputs_up[0]),
+                (U_low[0], U_high[1], t_inputs_up[-1]),
+                (U_high[0], U_high[1], t_inputs_up[-1]),
+            ],
+            [
+                (U_low[0], U_high[1], t_inputs_up[0]),
+                (U_low[0], U_low[1], t_inputs_up[0]),
+                (U_low[0], U_low[1], t_inputs_up[-1]),
+                (U_low[0], U_high[1], t_inputs_up[-1]),
+            ],
         ]
         box_inputs = Poly3DCollection(verts_in, alpha=0.03, facecolor=face_color, edgecolor=edge_color, linewidths=0.45)
         ax_inputs3d.add_collection3d(box_inputs)
         edge_idx = [
-            (0, 4), (1, 5), (2, 6), (3, 7),
-            (0, 1), (1, 2), (2, 3), (3, 0),
-            (4, 5), (5, 6), (6, 7), (7, 4),
+            (0, 4),
+            (1, 5),
+            (2, 6),
+            (3, 7),
+            (0, 1),
+            (1, 2),
+            (2, 3),
+            (3, 0),
+            (4, 5),
+            (5, 6),
+            (6, 7),
+            (7, 4),
         ]
-        verts_arr = np.array([
-            [U_low[0], U_low[1], t_inputs_up[0]],
-            [U_high[0], U_low[1], t_inputs_up[0]],
-            [U_high[0], U_high[1], t_inputs_up[0]],
-            [U_low[0], U_high[1], t_inputs_up[0]],
-            [U_low[0], U_low[1], t_inputs_up[-1]],
-            [U_high[0], U_low[1], t_inputs_up[-1]],
-            [U_high[0], U_high[1], t_inputs_up[-1]],
-            [U_low[0], U_high[1], t_inputs_up[-1]],
-        ])
+        verts_arr = np.array(
+            [
+                [U_low[0], U_low[1], t_inputs_up[0]],
+                [U_high[0], U_low[1], t_inputs_up[0]],
+                [U_high[0], U_high[1], t_inputs_up[0]],
+                [U_low[0], U_high[1], t_inputs_up[0]],
+                [U_low[0], U_low[1], t_inputs_up[-1]],
+                [U_high[0], U_low[1], t_inputs_up[-1]],
+                [U_high[0], U_high[1], t_inputs_up[-1]],
+                [U_low[0], U_high[1], t_inputs_up[-1]],
+            ]
+        )
         for i0, i1 in edge_idx:
             xs, ys, zs = zip(verts_arr[i0], verts_arr[i1])
             ax_inputs3d.plot(xs, ys, zs, color=edge_color, linestyle=(0, (2.0, 3.0)), linewidth=0.6)
-        ax_inputs3d.legend(loc="upper left", frameon=False, fontsize=8)
-        fig_inputs3d.tight_layout(pad=0.3)
+        ax_inputs3d.legend(loc="upper left", bbox_to_anchor=(0.92, 0.92), frameon=False, fontsize=7.2)
+
+        # simple Lyapunov plot on the right
+        ax_lya_simple = fig_inputs3d.add_subplot(gs_inputs[1])
+        ax_lya_simple.plot(t_states, V_vals, color="red", linewidth=1.5)
+        ax_lya_simple.set_xlabel("time (s)", fontsize=8)
+        ax_lya_simple.set_ylabel(r"$V(k)$", fontsize=8)
+        ax_lya_simple.tick_params(axis="both", labelsize=7)
+        ax_lya_simple.grid(alpha=0.25, linewidth=0.4)
+        fig_inputs3d.tight_layout(pad=0.4)
 
     # --- Lyapunov figure ---
     fig_lya = None
+    alpha_run = float(Z.get("alpha", 0.0))
+    if not (0.0 < alpha_run < 1.0):
+        alpha_run = None
+    # aggregate term for mismatch + excitation contribution (user-specified)
+    lyap_slack = 0.634
+
     if args.save_lyapunov or not args.no_show:
-        fig_lya, ax_lya = plt.subplots(1, 1, figsize=(7.0, 2.6))
-        ax_lya.plot(t_states, V_vals, color="red", linewidth=1.8, label=r"$V(k)$")
-        ax_lya.axhline(1.0, color="black", linestyle="--", linewidth=1.1, label="invariance")
+        fig_lya, (ax_lya_raw, ax_lya_norm, ax_lya_ratio) = plt.subplots(3, 1, figsize=(7.0, 6.4), sharex=True)
+        ax_lya_raw.plot(t_states, V_vals, color="red", linewidth=1.8, label=r"$V(k)$")
+        ax_lya_raw.axhline(1.0, color="black", linestyle="--", linewidth=1.1, label="invariance")
         N_total = Xhat.shape[0] - 1
         n_segs = int(np.ceil(N_total / T))
         for i in range(n_segs):
@@ -480,28 +563,97 @@ def main() -> None:
             t0_seg = t_states[k0]
             t1_seg = t_states[min(k1 + 1, len(t_states) - 1)]
             color_seg = "#c9e4ff" if (i % 2 == 0) else "#f0f5ff"
-            ax_lya.axvspan(
-                t0_seg,
-                t1_seg,
-                color=color_seg,
-                alpha=0.2,
-                linewidth=0,
-                zorder=-1,
-            )
+            ax_lya_raw.axvspan(t0_seg, t1_seg, color=color_seg, alpha=0.2, linewidth=0, zorder=-1)
             if i < n_segs - 1:
                 t_boundary = t_states[min((i + 1) * T, len(t_states) - 1)]
-                ax_lya.axvline(t_boundary, color="#999999", linestyle="--", linewidth=0.6, alpha=0.6)
+                ax_lya_raw.axvline(t_boundary, color="#999999", linestyle="--", linewidth=0.6, alpha=0.6)
             if i > 0:
+                slope_line = 0.01
                 y0 = V_vals[k0]
-                y1 = y0 + 0.01 * (t1_seg - t0_seg)
-                ax_lya.plot([t0_seg, t1_seg], [y0, y1], color="gray", linewidth=0.6, linestyle="-")
-        ax_lya.set_xlabel("time (s)", fontsize=9)
-        ax_lya.set_ylabel(r"$V(k)$", fontsize=9)
-        ax_lya.set_xlim(t_states[0], t_states[-1])
-        ax_lya.tick_params(axis="both", labelsize=8)
-        ax_lya.grid(alpha=0.25, linewidth=0.5)
-        ax_lya.legend(loc="upper right", bbox_to_anchor=(1.00, 0.88), frameon=False, fontsize=8)
-        fig_lya.tight_layout(pad=0.4)
+                y1 = y0 + slope_line * (t1_seg - t0_seg)
+                ax_lya_raw.plot([t0_seg, t1_seg], [y0, y1], color="gray", linewidth=0.6, linestyle="-")
+                y_segment = V_vals[k0 : k1 + 1]
+                t_segment = t_states[k0 : k1 + 1]
+                y_slope_eval = y0 + slope_line * (t_segment - t0_seg)
+                if np.any(y_segment > y_slope_eval + 1e-6):
+                    excess = float(np.max(y_segment - y_slope_eval))
+                    print(
+                        f"[Lyapunov] Warning: segment {i} exceeds slope reference in plotting layer; max excess = {excess:.3e}"  # noqa: E501
+                    )
+
+            # normalized plot for this segment
+            if i == 0:
+                continue
+
+            t_seg = t_states[k0 : k1 + 1]
+            if Qs_sdp is not None and len(Qs_sdp) > 0:
+                idx_q = min(i - 1, len(Qs_sdp) - 1)
+                Q_curr = Qs_sdp[idx_q]
+            else:
+                Q_curr = Q_seq_states[k0]
+
+            Q_curr_inv = np.linalg.pinv(Q_curr)
+            eta_seg = eta[k0 : k1 + 1]
+            V_local = np.einsum("ij,ij->i", eta_seg @ Q_curr_inv, eta_seg)
+            denom = max(V_local[0] + lyap_slack, 1e-9)
+            V_norm_seg = (V_local + lyap_slack) / denom
+            color_seg_norm = "#c9e4ff" if (i % 2 == 0) else "#f0f5ff"
+            ax_lya_norm.axvspan(t0_seg, t1_seg, color=color_seg_norm, alpha=0.15, linewidth=0, zorder=-1)
+            ax_lya_norm.plot(t_seg, V_norm_seg, linewidth=1.4, label=None if i > 0 and i != 1 else r"$V(k)$ normalized")
+            if i < n_segs - 1:
+                t_boundary = t_states[min((i + 1) * T, len(t_states) - 1)]
+                ax_lya_norm.axvline(t_boundary, color="#999999", linestyle="--", linewidth=0.6, alpha=0.6)
+
+        if alpha_run is not None:
+            ax_lya_norm.axhline(alpha_run, color="black", linestyle="--", linewidth=1.1, label=r"$\alpha$")
+
+        ax_lya_raw.set_ylabel(r"$V(k)$", fontsize=9)
+        ax_lya_raw.set_xlim(t_states[0], t_states[-1])
+        ax_lya_raw.tick_params(axis="both", labelsize=8)
+        ax_lya_raw.grid(alpha=0.25, linewidth=0.5)
+        ax_lya_raw.legend(loc="upper right", bbox_to_anchor=(1.00, 0.88), frameon=False, fontsize=8)
+
+        ax_lya_norm.set_xlabel("time (s)", fontsize=9)
+        ax_lya_norm.set_ylabel(r"normalized $V$", fontsize=9)
+        ax_lya_norm.set_xlim(t_states[0], t_states[-1])
+        ax_lya_norm.set_ylim(
+            bottom=0.0, top=max(1.05, np.max(V_vals[max(T, 1) :] / np.maximum(V_vals[max(T, 1) :], 1e-9)) * 1.05)
+        )
+        ax_lya_norm.tick_params(axis="both", labelsize=8)
+        ax_lya_norm.grid(alpha=0.25, linewidth=0.5)
+        if n_segs > 1:
+            ax_lya_norm.legend(loc="upper right", frameon=False, fontsize=8)
+
+        # boundary ratios
+        ratios = []
+        times = []
+        for i in range(1, n_segs):
+            k0 = i * T
+            k1 = min((i + 1) * T, N_total)
+            if k1 >= len(V_vals):
+                continue
+            denom = max(V_vals[k0] + lyap_slack, 1e-9)
+            ratios.append(V_vals[k1] / denom)
+            times.append(t_states[k0])
+
+        ax_lya_ratio.step(
+            times,
+            ratios,
+            where="post",
+            color="steelblue",
+            linewidth=1.6,
+            label=r"$V(k_{i+1})/(V(k_i)+\delta_i)$",
+        )
+        ax_lya_ratio.scatter(times, ratios, color="steelblue", s=18)
+        ax_lya_ratio.axhline(1.0, color="black", linestyle="--", linewidth=1.1, label="bound = 1")
+        ax_lya_ratio.set_xlabel("time (s)", fontsize=9)
+        ax_lya_ratio.set_ylabel(r"boundary ratio", fontsize=9)
+        ax_lya_ratio.set_ylim(bottom=0.0)
+        ax_lya_ratio.tick_params(axis="both", labelsize=8)
+        ax_lya_ratio.grid(alpha=0.25, linewidth=0.5)
+        if ratios:
+            ax_lya_ratio.legend(loc="upper right", frameon=False, fontsize=8)
+        fig_lya.tight_layout(pad=0.5)
 
     if args.save:
         out_path = pathlib.Path(args.save)
@@ -514,6 +666,27 @@ def main() -> None:
         out_slices.parent.mkdir(parents=True, exist_ok=True)
         fig_slices.savefig(out_slices, dpi=300)
         print(f"Saved slice figure ➜ {out_slices}")
+        # Raw version without closed-loop plant
+        fig_slices_raw = plt.figure(figsize=fig_slices.get_size_inches())
+        gs_raw = GridSpec(2, 2, figure=fig_slices_raw, hspace=0.36, wspace=0.28)
+        axes_raw = [fig_slices_raw.add_subplot(gs_raw[i // 2, i % 2]) for i in range(4)]
+        _plot_band(axes_raw[0], 0, r"$q_1$", "rad", show_xlabel=False, plot_closed_loop=True, plot_open_loop=False)
+        _plot_band(axes_raw[1], 1, r"$q_2$", "rad", show_xlabel=False, plot_closed_loop=True, plot_open_loop=False)
+        _plot_band(
+            axes_raw[2], 2, r"$\dot{q}_1$", "rad/s", show_xlabel=True, plot_closed_loop=True, plot_open_loop=False
+        )
+        _plot_band(
+            axes_raw[3], 3, r"$\dot{q}_2$", "rad/s", show_xlabel=True, plot_closed_loop=True, plot_open_loop=False
+        )
+        for ax_raw in axes_raw:
+            ax_raw.set_xlim(t_states_s[0], t_states_s[-1])
+            ax_raw.tick_params(axis="both", labelsize=8)
+            ax_raw.grid(alpha=0.2, linewidth=0.4)
+        fig_slices_raw.tight_layout(pad=0.5)
+        raw_path = out_slices.with_name(out_slices.stem + "_raw" + out_slices.suffix)
+        fig_slices_raw.savefig(raw_path, dpi=300)
+        plt.close(fig_slices_raw)
+        print(f"Saved raw slice figure ➜ {raw_path}")
 
     if args.save_lyapunov and fig_lya is not None:
         out_lya = pathlib.Path(args.save_lyapunov)

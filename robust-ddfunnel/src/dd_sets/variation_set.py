@@ -15,7 +15,7 @@ def build_variation_set_blocks(C: float, T_tilde: int, n: int, m: int) -> Dict[s
         [  0,   0,    0   ]   # (n  rows)
         [  0,   0,    0   ]   # (m  rows)
         [  0,  I_n,   0   ]   # (n  rows)
-        [  0,   0,   I_m  ]   # (n  rows)
+        [  0,   0,   I_n  ]   # (n  rows)
       ],
       Z2 = diag( (C^2 T_tilde^2) I_n,  -I_n,  -I_m )
 
@@ -45,7 +45,7 @@ def build_variation_set_blocks(C: float, T_tilde: int, n: int, m: int) -> Dict[s
             np.hstack([zeros_nn, zeros_nn, zeros_nm]),  # row block 2 (n)
             np.hstack([zeros_mn, zeros_mn, zeros_mm]),  # row block 3 (m)
             np.hstack([zeros_nn, np.eye(n), zeros_nm]),  # row block 4 (n)
-            np.hstack([zeros_nn, zeros_nn, np.eye(m)]),  # row block 5 (n)
+            np.hstack([zeros_nn, zeros_nn, zeros_nm]),  # row block 5 (n)
         ]
     )
 

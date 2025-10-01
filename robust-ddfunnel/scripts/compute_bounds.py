@@ -78,7 +78,18 @@ def _get_state_box(demo, Xhat: np.ndarray, pad_frac: float) -> Tuple[np.ndarray,
 def _get_input_box(demo) -> Tuple[np.ndarray, np.ndarray]:
     return np.asarray(demo.U.low, float), np.asarray(demo.U.high, float)
 
-
+def _resolve_T_tilde(existing_val, seg_T: int, cli_val=None) -> int:
+    # Priority: CLI override > existing numeric > default 2*T-1
+    if cli_val is not None:
+        return int(cli_val)
+    if existing_val is None:
+        return 2 * int(seg_T) - 1
+    if isinstance(existing_val, str) and existing_val.strip().lower() in ("", "none", "null", "auto"):
+        return 2 * int(seg_T) - 1
+    try:
+        return int(existing_val)
+    except (TypeError, ValueError):
+        return 2 * int(seg_T) - 1
 # ---------------------------
 # main
 # ---------------------------
@@ -123,6 +134,8 @@ def main():  # noqa: PLR0915
     )
     p.add_argument("--lr-dirs-rem", type=int, default=8, help="# directions per nominal point for remainder-ratio part")
     p.add_argument("--lr-fd-eps", type=float, default=1e-6, help="Finite-diff epsilon for Jacobians inside L_r")
+    p.add_argument("--t-tilde", type=int, default=None,
+               help="Override T_tilde; default is 2*T-1 using cfg.segmentation.T")
     args = p.parse_args()
 
     rng = np.random.default_rng(args.seed)
@@ -143,6 +156,7 @@ def main():  # noqa: PLR0915
     v_nom = nom["v"]
     x_goal = nom["x_goal"]
     u_goal = nom["u_goal"]
+    seg_T = int(demo.segmentation.T)
     if abs(nom["dt"] - dt) > 1e-12 and args.debug:
         print(f"[warn] dt mismatch: cfg dt={dt} vs npz dt={nom['dt']}. Using cfg dt={dt}.")
 
@@ -212,8 +226,7 @@ def main():  # noqa: PLR0915
         except Exception:
             existing = {}
 
-    # carry through prior T_tilde if any
-    T_tilde = existing.get("T_tilde")
+    T_tilde_val = _resolve_T_tilde(existing.get("T_tilde"), seg_T, args.t_tilde)
 
     C_val = (float(L_J) * float(v_nom)) if (v_nom is not None) else None
 
@@ -225,7 +238,7 @@ def main():  # noqa: PLR0915
         "L_J": float(L_J),
         "L_r": float(L_r),
         "C": (float(C_val) if C_val is not None else None),
-        "T_tilde": T_tilde,
+        "T_tilde": int(T_tilde_val),
         "x_goal": (x_goal.tolist() if x_goal is not None else None),
         "u_goal": (u_goal.tolist() if u_goal is not None else None),
         "X_box": {"low": X_low.tolist(), "high": X_high.tolist()},

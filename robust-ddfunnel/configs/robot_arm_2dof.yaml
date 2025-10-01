@@ -24,24 +24,24 @@ twin:   # slight mismatch to realize Δ(x,u)
   g: 9.81
 
 initial:
-  plant_x0: [0.30, -0.25, 0.00, 0.00]
+  plant_x0: [2.28, 1.78, 1.0, -1.0]
   twin_x0:  [0.28, -0.22, 0.00, 0.00]
 discretization:
   dt: 0.01
   method: rk4
 
 horizon:
-  N: 1500
+  N: 600
 
 constraints:
   X:        # state box: order = [q1, q2, dq1, dq2]
-    q1:  [-5.0, 5.0]
-    q2:  [-5.0, 5.0]
-    dq1: [-3.0, 3.0]
-    dq2: [-4.0, 4.0]
+    q1:  [-5.0, 9.0]
+    q2:  [-8.0, 8.0]
+    dq1: [-8.0, 8.0]
+    dq2: [-7.0, 7.0]
   U:        # input box: order = [tau1, tau2]
-    tau1: [-25.0, 30.0]
-    tau2: [-25.0, 30.0]
+    tau1: [-40.0, 40.0]
+    tau2: [-40.0, 40.0]
 
 funnel:     # paper constants
   alpha: 0.92
@@ -50,7 +50,7 @@ funnel:     # paper constants
   gamma: 0.15
 
 segmentation:
-  T: 200
+  T: 100
   L_min: 6      # n+m=6 for 2-DoF arm (n=4, m=2)
   L_max: 60
   v_bar: 0.6
