@@ -1,0 +1,10 @@
+# Python caches
+__pycache__/
+*.py[cod]
+.ipynb_checkpoints/
+
+# Generated results (adjust if needed)
+robust-ddfunnel/results/
+
+# Packaging/build bits
+*.egg-info/
